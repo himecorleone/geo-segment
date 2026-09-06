@@ -12,3 +12,6 @@ tags=segmentation,raster,ai,sam,buildings,onnx,polygons,offline
 icon=icon.svg
 experimental=True
 hasProcessingProvider=False
+homepage=https://github.com/himecorleone/geo-segment
+repository=https://github.com/himecorleone/geo-segment
+tracker=https://github.com/himecorleone/geo-segment/issues
