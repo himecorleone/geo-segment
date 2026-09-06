@@ -61,6 +61,20 @@ Describe the problem, resulting behaviour and actual checks in your pull request
 Do not include private imagery in a report; a small redistributable example is
 preferable. Keep discussion respectful and practical.
 
+## Optional large-area capacity check
+
+With the AI/building runtime dependencies and supported RAMP file available:
+
+```sh
+.venv/bin/python tools/check_large_area.py
+```
+
+This processes a synthetic 500-million-pixel raster with simulated model
+scores and verifies connected output and scratch cleanup. Allow 4 GB of free
+temporary storage. It measures the raster data path, not neural-inference speed
+or detection accuracy. `GEO_SEGMENT_TEST_OUTPUT` can redirect the optional QGIS
+building harness output without replacing earlier validation artefacts.
+
 ## Licence
 
 By submitting a contribution, you agree to make your original contribution

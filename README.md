@@ -12,7 +12,8 @@ Segment Anything (SAM) points and boxes to outline objects. Review and refine
 polygons in QGIS, then export them to GeoPackage.
 
 - Local inference in a separate Python environment, with no imagery uploads.
-- Building inference in overlapping metric tiles with no-data handling.
+- Building inference in overlapping metric tiles with no-data handling, up to
+  500 million pixels (125 km² at 0.5 m/pixel), using disk storage for large jobs.
 - Cached SAM image embeddings for repeated prompts on the same capture.
 - Class, model, area and review metadata on exported results.
 
@@ -31,7 +32,7 @@ python3 tools/package.py
 ```
 
 In QGIS, open **Plugins → Manage and Install Plugins → Install from ZIP**, select
-`dist/geo_segment-0.2.0.zip`, and enable **Geo Segment**. Follow the
+`dist/geo_segment-0.3.0.zip`, and enable **Geo Segment**. Follow the
 [setup and usage guide](geo_segment/README.md) to prepare a separate Python
 3.10–3.12 environment and download the required model weights.
 

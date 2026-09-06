@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-06
+
+- Increase the building limit to 500 million pixels and remove the 8192-pixel
+  side restriction; a 10 km × 10 km area at 0.5 m/pixel fits in one job.
+- Use temporary disk-backed arrays for large raster preparation and predictions.
+- Filter in blocks with five-pixel halos and polygonise a stitched disk raster.
+- Check temporary disk capacity and clean up scratch files after cancellation.
+- Add exact-limit, disk-path and filter-seam regression tests, plus a synthetic
+  500-million-pixel capacity harness.
+
+## Repository setup
 
 - Add contributor guidance, issue and pull-request templates, and automated
   unit-test and plugin-package checks.
