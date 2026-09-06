@@ -1,0 +1,14 @@
+[general]
+name=Geo Segment
+description=Local building detection and interactive SAM segmentation with georeferenced review and export
+version=0.2.0
+qgisMinimumVersion=3.28
+qgisMaximumVersion=3.99
+author=Geo Segment contributors
+license=MIT
+about=Detect building regions from local RGB rasters with the tested RAMP ONNX model, or outline objects with SAM points and boxes. Reuses SAM capture embeddings, processes buildings in overlapping metric tiles, records class/model/area/review metadata and exports GeoPackage. Building regions need review and may merge adjacent buildings. AI runs locally in a separate Python environment; model files are supplied separately.
+category=Raster
+tags=segmentation,raster,ai,sam,buildings,onnx,polygons,offline
+icon=icon.svg
+experimental=True
+hasProcessingProvider=False
