@@ -1,10 +1,12 @@
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import ExitStack
+from unittest.mock import patch
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
-from geo_segment.buildings import grid, polygons, read_area, tiled_mask, to_rgb8
+from geo_segment.buildings import grid, polygons, read_area, tiled_mask, to_rgb8, filtered_polygons
 
 
 class BuildingTests(unittest.TestCase):
@@ -38,8 +40,70 @@ class BuildingTests(unittest.TestCase):
 
     def test_grid_alignment_and_size_limit(self):
         self.assertEqual(grid([1.1, 2.1, 4.2, 5.2]), (1.0, 5.5, 7, 7))
+        # 10 km square and the exact 500-million-pixel boundary need no allocation.
+        self.assertEqual(grid([0, 0, 10000, 10000])[2:], (20000, 20000))
+        self.assertEqual(grid([0, 0, 12500, 10000])[2:], (25000, 20000))
+        with self.assertRaisesRegex(ValueError, '500 million'):
+            grid([0, 0, 12500.5, 10000])
         with self.assertRaises(ValueError):
             grid([0, 0, 100000, 100000])
+
+    def test_block_filter_matches_whole_image_across_seams_and_nodata(self):
+        from PIL import Image, ImageFilter
+        mask = np.zeros((1080, 1090), dtype='uint8')
+        mask[995:1060, 994:1080] = 1  # Crosses both 1024-pixel filter block seams.
+        mask[:20, :20] = 1
+        mask[1010, 1015] = 0
+        valid = np.ones_like(mask, dtype=bool)
+        valid[1030:1032, :] = False
+        transform = from_origin(600000, 4000000, .5, .5)
+        smoothed = np.array(Image.fromarray(mask).filter(ImageFilter.MedianFilter(11)))
+        expected = polygons(smoothed, valid, transform, 10)
+        with tempfile.TemporaryDirectory() as directory:
+            actual, count = filtered_polygons(mask, valid, transform, 'EPSG:32611', 10, directory)
+        self.assertEqual(actual, expected)
+        self.assertEqual(count, int(valid.sum()))
+
+    def test_disk_backed_read_and_tiling_match_memory_path(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as resources:
+            path = Path(directory)/'rgb16.tif'
+            data = np.arange(3*320*330, dtype=np.uint16).reshape(3, 320, 330)
+            data[:, :5] = 0
+            with rasterio.open(path, 'w', driver='GTiff', width=330, height=320, count=3,
+                               dtype='uint16', nodata=0, crs='EPSG:32611',
+                               transform=from_origin(600000, 4000000, .5, .5)) as dst:
+                dst.write(data)
+            request = dict(source=str(path), crs_wkt=rasterio.crs.CRS.from_epsg(32611).to_wkt(),
+                           bounds=[600000, 3999840, 600165, 4000000])
+            expected, valid, transform, crs = read_area(request)
+            predict = lambda tile: np.stack([1-tile[:, 0], tile[:, 0]], axis=1)
+            expected_mask = tiled_mask(expected, predict)
+            with patch('geo_segment.buildings.MEMORY_PIXELS', 0):
+                actual, actual_valid, actual_transform, _ = read_area(request, directory, resources=resources)
+                self.assertIsInstance(actual, np.memmap)
+                np.testing.assert_array_equal(actual, expected)
+                np.testing.assert_array_equal(actual_valid, valid)
+                self.assertEqual(actual_transform, transform)
+                actual_mask = tiled_mask(actual, predict, directory=directory, resources=resources)
+                self.assertIsInstance(actual_mask, np.memmap)
+                np.testing.assert_array_equal(actual_mask, expected_mask)
+
+    def test_large_read_requires_scratch_and_checks_free_space(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'rgb.tif'
+            with rasterio.open(path, 'w', driver='GTiff', width=10, height=10, count=3,
+                               dtype='uint8', crs='EPSG:32611',
+                               transform=from_origin(600000, 4000000, .5, .5)) as dst:
+                dst.write(np.ones((3, 10, 10), dtype='uint8'))
+            request = dict(source=str(path), crs_wkt=rasterio.crs.CRS.from_epsg(32611).to_wkt(),
+                           bounds=[600000, 3999995, 600005, 4000000])
+            with patch('geo_segment.buildings.MEMORY_PIXELS', 0):
+                with self.assertRaisesRegex(ValueError, 'working directory'):
+                    read_area(request)
+                with patch('geo_segment.buildings.shutil.disk_usage') as usage:
+                    usage.return_value.free = 0
+                    with self.assertRaisesRegex(ValueError, 'disk space'):
+                        read_area(request, directory)
 
     def test_stretch_excludes_nodata_and_preserves_byte_rgb(self):
         data = np.arange(300, dtype=np.uint16).reshape(3, 10, 10)*10

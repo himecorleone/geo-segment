@@ -35,7 +35,8 @@ def wait_until(predicate, timeout=120):
         time.sleep(.01)
 
 root=Path(__file__).resolve().parents[1]
-output=root/'dist/optimised-test'; output.mkdir(exist_ok=True)
+output=Path(os.environ.get('GEO_SEGMENT_TEST_OUTPUT', root/'dist/optimised-test'))
+output.mkdir(parents=True, exist_ok=True)
 app=QgsApplication([],False); app.initQgis()
 iface=Interface(); project=QgsProject.instance()
 raster=QgsRasterLayer(str(root/'dist/satellite-test/spacenet-vegas-img10-rgb8.tif'),'SpaceNet Vegas img10')
@@ -58,7 +59,7 @@ assert layer.featureCount()>0
 assert all(f['class_name']=='building' and f['review']=='unreviewed' and f['area_m2']>0 and f.geometry().isGeosValid() for f in layer.getFeatures())
 assert plugin.result_pixel_size==.5
 assert not plugin.write_geopackage(layer,output/'buildings.gpkg')
-loaded=QgsVectorLayer(str(output/'buildings.gpkg'),'Geo Segment 0.2 building regions','ogr')
+loaded=QgsVectorLayer(str(output/'buildings.gpkg'),'Geo Segment building regions','ogr')
 assert loaded.isValid() and loaded.featureCount()==layer.featureCount()
 loaded.renderer().setSymbol(layer.renderer().symbol().clone())
 assert loaded.fields().indexOf('class_name')>=0
@@ -95,13 +96,16 @@ print('PASS: building inference via QGIS, classification metadata, valid UTM pol
 iface.canvas.setLayers([loaded,raster]); iface.canvas.refresh(); app.processEvents()
 wait_until(lambda:not iface.canvas.isDrawing()); app.processEvents()
 project.viewSettings().setDefaultViewExtent(QgsReferencedRectangle(iface.canvas.extent(),iface.canvas.mapSettings().destinationCrs()))
-assert project.write(str(output/'Geo-Segment-0.2-Satellite.qgz'))
+assert project.write(str(output/'Geo-Segment-Satellite.qgz'))
 iface.window.grab().save(str(output/'qgis-buildings-preview.png'))
 # A running building job must not add orphaned results after source removal.
 plugin.detect_buildings(); assert plugin.process.waitForStarted(3000)
+scratch=Path(plugin.temp.name)/'buildings-cancel-test'
+scratch.mkdir(); (scratch/'partial.npy').write_bytes(b'cancelled job')
 project.removeMapLayer(raster.id()); wait_until(lambda:not plugin.busy)
 assert 'Cancelled' in plugin.status.text(),plugin.log.toPlainText()
 assert plugin.result_layer is None
+assert not list(Path(plugin.temp.name).glob('buildings-*'))
 print('PASS: removing the input cancels building inference without orphaned results',flush=True)
 iface.canvas.setLayers([]); plugin.unload(); project.clear(); iface.window.close()
 iface.active=None
