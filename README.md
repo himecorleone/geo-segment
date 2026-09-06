@@ -1,5 +1,11 @@
 # Geo Segment for QGIS
 
+[![Tests and package](https://github.com/himecorleone/geo-segment/actions/workflows/ci.yml/badge.svg)](https://github.com/himecorleone/geo-segment/actions/workflows/ci.yml)
+[![MIT licence](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+
+[User guide](geo_segment/README.md) · [Contributing](CONTRIBUTING.md) ·
+[Changelog](CHANGELOG.md) · [Report a bug](https://github.com/himecorleone/geo-segment/issues/new/choose)
+
 Local building detection and interactive image segmentation for QGIS 3.
 Use the RAMP building model to create georeferenced building regions, or use
 Segment Anything (SAM) points and boxes to outline objects. Review and refine
@@ -17,7 +23,8 @@ supported.
 
 ## Install
 
-Clone or download this repository, then build the QGIS plugin ZIP:
+Download the installable plugin ZIP from [Releases](https://github.com/himecorleone/geo-segment/releases),
+or clone this repository and build it yourself:
 
 ```sh
 python3 tools/package.py
@@ -39,9 +46,11 @@ Run the dependency-free coordinate tests:
 python3 -m unittest discover -s tests -p 'test_spatial.py'
 ```
 
-With both AI requirements files installed in your external environment:
+Install `requirements-dev.txt` in a separate environment to run the full unit
+suite without downloading model weights:
 
 ```sh
+python -m pip install -r requirements-dev.txt
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
@@ -53,6 +62,10 @@ under `models`. These external fixtures are not part of the repository.
 
 See the [validation record](geo_segment/VALIDATION.md) for completed tests,
 a one-scene satellite diagnostic and remaining platform/accuracy limitations.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the repository layout, development
+setup and pull-request guidance. GitHub Actions checks unit tests and ZIP
+packaging; real QGIS and inference checks remain separate.
 
 ## Licence
 
