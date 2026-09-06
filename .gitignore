@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv*/
+.runtime/
+models/
+dist/
+.DS_Store
+LOCAL_SETUP.md
+symbology-style.db
+.env
+.env.*
