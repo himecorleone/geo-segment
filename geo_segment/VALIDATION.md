@@ -1,7 +1,34 @@
-# Verification · Geo Segment 0.2.0
+# Verification · Geo Segment
 
 Tested on 6 September 2026 with QGIS 3.44.10, bundled Python 3.12 and a
 separate Python 3.12.10 environment on Apple Silicon.
+
+## Version 0.3.0 checks
+
+- 18 unit tests passed, including acceptance of 400 million pixels (10 km square)
+  and exactly 500 million pixels, rejection just above the limit, disk-space
+  checks, memory/disk path equivalence, and median-filter continuity across
+  1024-pixel block seams and no-data strips.
+- A full 25,000 × 20,000 synthetic raster (500 million valid pixels) completed
+  preparation, 13,520 prediction tiles, block filtering and global polygonisation.
+  All three synthetic regions were recovered and scratch files were removed.
+  The check took 48.6 seconds with peak resident memory of 2.76 GB on this Mac.
+  **Predictions were simulated:** these figures do not measure real model speed,
+  real-model memory overhead or satellite detection accuracy at this scale.
+- Real RAMP inference through QGIS and the external worker still returned 23
+  valid regions on SpaceNet img10, with 19 matches against 28 references:
+  precision 82.6%, recall 67.9%, F1 74.5%. This run took 3.74 seconds. GeoPackage
+  export preserved classification metadata. Input removal cancelled inference,
+  and the harness verified cleanup of interrupted-job scratch directories.
+- Installed the 0.3.0 ZIP in the live QGIS Plugin Manager, confirmed the
+  500-million-pixel capacity text and ran the satellite action successfully:
+  23 building regions were added.
+- Large non-byte imagery now uses bounded sampling for the percentile stretch;
+  this can affect results relative to an exact whole-area stretch. Byte RGB and
+  the small-area stretch keep their existing behaviour.
+- A full-size run with real model predictions, general large-area accuracy,
+  Windows cleanup and dense vector outputs have not been validated. The
+  20,000-region output guard still applies. No resumable job support was added.
 
 ## Version 0.2.0 checks
 

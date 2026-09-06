@@ -207,6 +207,8 @@ def main():
         if not args.request or not args.output:
             parser.error("--request and --output are required")
         request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+        # Keep large raster scratch files inside the QGIS-owned job directory.
+        request["work_dir"] = str(Path(args.output).resolve().parent)
         result = run(request)
         output = Path(args.output)
         temporary = output.with_suffix(".tmp")

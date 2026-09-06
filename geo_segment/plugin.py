@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import tempfile
+import shutil
 
 from qgis.PyQt.QtCore import Qt, QSize, QProcess, QProcessEnvironment, QSettings
 from qgis.PyQt.QtGui import QColor, QIcon
@@ -185,7 +186,7 @@ class GeoSegmentPlugin:
         area_form.addRow("Minimum building area", self.min_area)
         building_layout.addLayout(area_form)
         self.building_button = self.button("Detect buildings in current view", self.detect_buildings, building_layout)
-        building_note = QLabel("Uses the selected local raster's first three RGB bands at 0.5 m resolution. No capture needed. Results are building regions: touching buildings may merge and counts need review.")
+        building_note = QLabel("Uses the selected local raster's first three RGB bands at 0.5 m resolution, up to 500 million pixels (125 km²). Large jobs use temporary disk space. Results are building regions: touching buildings may merge and counts need review.")
         building_note.setWordWrap(True)
         building_layout.addWidget(building_note)
         work_layout.insertWidget(1, building_group)
@@ -606,6 +607,10 @@ class GeoSegmentPlugin:
         except Exception as error:
             self.message("Could not load the result: " + str(error))
         finally:
+            # A killed worker cannot run its own temporary-directory cleanup.
+            for directory in Path(self.temp.name).glob("buildings-*"):
+                if directory.is_dir():
+                    shutil.rmtree(directory, ignore_errors=True)
             process.deleteLater()
             self.set_busy(False)
 

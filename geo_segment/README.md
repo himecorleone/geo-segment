@@ -1,6 +1,6 @@
 # Geo Segment · QGIS plugin
 
-Version 0.2.0 is an independent local segmentation plugin for QGIS 3.28–3.44.
+Version 0.3.0 is an independent local segmentation plugin for QGIS 3.28–3.44.
 It combines a class-specific RAMP building model with Meta's Segment Anything
 (SAM) for interactive object boundaries. It contains no TerraLab code, branding,
 account integration or cloud service. TerraLab's repository was reviewed as a
@@ -9,7 +9,7 @@ workflow reference; our automatic building inference runs locally.
 ## Install the plugin
 
 In QGIS, choose **Plugins → Manage and Install Plugins → Install from ZIP**,
-select `geo_segment-0.2.0.zip`, and enable **Geo Segment**. Open it from the
+select `geo_segment-0.3.0.zip`, and enable **Geo Segment**. Open it from the
 Raster menu or the teal polygon toolbar button.
 
 ## Set up local AI once
@@ -72,8 +72,32 @@ and applies the tested model's 11-pixel median filter. These fixed defaults
 come from the downloaded model metadata; the online model-zoo table instead
 lists 0.4 m. Byte RGB is preserved; other numeric RGB receives a 2–98 percentile
 stretch over valid pixels in the selected area. QGIS display styling is not
-applied in this mode. Jobs are limited to 16 million inference pixels, with
-neither side above 8192 pixels. Zoom in if this limit is exceeded.
+applied in this mode. Jobs accept up to **500 million inference pixels**
+(125 km² at 0.5 m/pixel). A 10 km × 10 km area uses 400 million pixels and fits.
+The limit is checked after intersection with the raster and snapping to the
+metric grid; the previous 8192-pixel side restriction has been removed.
+
+Areas above 16 million pixels use disk-backed RGB, validity and prediction
+arrays. Raster preparation and median filtering run in bounded blocks, with
+filter halos that preserve continuity across block boundaries. Polygonisation
+uses one stitched raster, so processing blocks do not create separate copies
+of buildings. At the full limit, allow at least **4 GB of free temporary disk
+space**, in addition to your source raster and exported results. The worker
+checks available space before creating its large arrays.
+
+For large non-byte rasters, the 2–98 percentile stretch uses one evenly spaced
+sample of up to one million pixels over the area. If that sample misses all
+valid data, the first valid block supplies the stretch. Byte RGB is preserved,
+and small-area stretching retains the earlier exact calculation. This sampling
+can change results on higher-bit imagery compared with a whole-area percentile.
+
+Inference remains sequential on the CPU. Large real-model jobs may take hours;
+the capacity check with simulated predictions is not an inference-speed
+benchmark. Cancel stops the job and QGIS removes its scratch files; completed
+jobs also clean up. A crash can leave temporary files. There is no resume from
+a cancelled or interrupted job. The separate **20,000 building-region limit**
+remains in place to bound vector output; a dense area may need smaller sections
+even when it fits the pixel limit.
 
 Each connected region becomes one feature. **A region count is not a verified
 building count**: adjacent buildings may merge. Fields record `class_name`,

@@ -1,13 +1,18 @@
 """Local RAMP building inference. No QGIS or SAM imports are required."""
 import hashlib
 import math
+import shutil
+import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 
 MODEL_SHA256 = "29709ab0ed665f239e60ff2f5dbdcc70bdcb3d2d045a8934387a9bab279d5554"
 RESOLUTION = 0.5  # Metres, from the tested RAMP model's embedded metadata.
 TILE_SIZE = 256
 STRIDE = 192
-MAX_PIXELS = 16_000_000
+MAX_PIXELS = 500_000_000
+MEMORY_PIXELS = 16_000_000
+BLOCK_SIZE = 1024
 
 
 def validate_request(request):
@@ -31,12 +36,12 @@ def grid(bounds):
     ymax = math.ceil(ymax / RESOLUTION) * RESOLUTION
     width = math.ceil((xmax - xmin) / RESOLUTION)
     height = math.ceil((ymax - ymin) / RESOLUTION)
-    if width * height > MAX_PIXELS or max(width, height) > 8192:
-        raise ValueError("This area is too large for one job. Zoom in (maximum 16 million pixels at 0.5 m).")
+    if width * height > MAX_PIXELS:
+        raise ValueError("This area is too large for one job. Zoom in (maximum 500 million pixels at 0.5 m).")
     return xmin, ymax, width, height
 
 
-def to_rgb8(data, valid):
+def to_rgb8(data, valid, limits=None):
     """Preserve byte RGB; stretch higher-bit data using valid pixels only."""
     import numpy as np
     if not valid.any():
@@ -46,20 +51,35 @@ def to_rgb8(data, valid):
     else:
         result = np.zeros(data.shape, dtype=np.uint8)
         for i, band in enumerate(data):
-            low, high = np.percentile(band[valid], (2, 98))
+            low, high = limits[i] if limits is not None else np.percentile(band[valid], (2, 98))
             if high > low:
                 result[i] = np.nan_to_num(np.clip((band - low) * (255 / (high - low)), 0, 255)).astype(np.uint8)
     result[:, ~valid] = 0
     return result
 
 
-def read_area(request):
+def blocks(height, width, size=BLOCK_SIZE):
+    for y in range(0, height, size):
+        for x in range(0, width, size):
+            yield y, x, min(size, height-y), min(size, width-x)
+
+
+def mapped_array(path, dtype, shape, resources):
+    import numpy as np
+    array = np.lib.format.open_memmap(path, mode="w+", dtype=dtype, shape=shape)
+    if resources is not None:
+        resources.callback(array._mmap.close)
+    return array
+
+
+def read_area(request, directory=None, report=lambda message: None, resources=None):
     import numpy as np
     import rasterio
     from rasterio.crs import CRS
     from rasterio.transform import from_origin
     from rasterio.vrt import WarpedVRT
     from rasterio.warp import transform_bounds, Resampling
+    from rasterio.windows import Window
     target = CRS.from_wkt(request["crs_wkt"])
     epsg = target.to_epsg()
     if epsg is None or not (32601 <= epsg <= 32660 or 32701 <= epsg <= 32760):
@@ -78,19 +98,62 @@ def read_area(request):
         # A virtual warp reads only this bounded area rather than the whole survey.
         has_alpha = rasterio.enums.ColorInterp.alpha in source.colorinterp
         with WarpedVRT(source, crs=target, transform=transform, width=width, height=height,
-                       resampling=Resampling.bilinear, add_alpha=not has_alpha) as warped:
-            data = warped.read([1, 2, 3])
-            valid = (warped.dataset_mask() > 0) & np.isfinite(data).all(axis=0)
-        return to_rgb8(data, valid), valid, transform, target
+                       resampling=Resampling.bilinear, add_alpha=not has_alpha,
+                       warp_mem_limit=128) as warped:
+            if width * height <= MEMORY_PIXELS:
+                data = warped.read([1, 2, 3])
+                valid = (warped.dataset_mask() > 0) & np.isfinite(data).all(axis=0)
+                return to_rgb8(data, valid), valid, transform, target
+            if directory is None:
+                raise ValueError("Large building areas require a temporary working directory.")
+            # RGB, validity and prediction arrays use disk rather than full-size RAM copies.
+            required = width * height * 6 + 256 * 1024**2
+            if shutil.disk_usage(directory).free < required:
+                raise ValueError("Not enough temporary disk space (need approximately {:.1f} GB).".format(required / 1e9))
+            report("Preparing {:,} pixels using temporary disk storage…".format(width * height))
+            rgb = mapped_array(Path(directory)/"rgb.npy", "uint8", (3, height, width), resources)
+            valid = mapped_array(Path(directory)/"valid.npy", "bool", (height, width), resources)
+            limits = None
+            if warped.dtypes[0] != "uint8":
+                # Use a bounded, evenly spaced sample for one consistent large-area stretch.
+                scale = min(1, (1_000_000 / (width * height))**.5)
+                sh = min(1_000_000, max(1, int(height*scale)))
+                sw = max(1, min(int(width*scale), 1_000_000 // sh))
+                sample = warped.read([1, 2, 3], out_shape=(3, sh, sw), resampling=Resampling.nearest)
+                sample_valid = (warped.dataset_mask(out_shape=(sh, sw)) > 0) & np.isfinite(sample).all(axis=0)
+                if sample_valid.any():
+                    limits = [np.percentile(band[sample_valid], (2, 98)) for band in sample]
+            valid_count = 0
+            for index, (y, x, h, w) in enumerate(blocks(height, width)):
+                window = Window(x, y, w, h)
+                data = warped.read([1, 2, 3], window=window)
+                good = (warped.dataset_mask(window=window) > 0) & np.isfinite(data).all(axis=0)
+                valid[y:y+h, x:x+w] = good
+                valid_count += int(good.sum())
+                if good.any():
+                    if data.dtype != np.uint8 and limits is None:
+                        # A sparse valid area can fall between sample points.
+                        limits = [np.percentile(band[good], (2, 98)) for band in data]
+                    rgb[:, y:y+h, x:x+w] = to_rgb8(data, good, limits)
+                else:
+                    rgb[:, y:y+h, x:x+w] = 0
+                if index % 32 == 0:
+                    report("Preparing imagery block {}…".format(index+1))
+            if not valid_count:
+                raise ValueError("No valid RGB imagery intersects the selected area.")
+            rgb.flush(); valid.flush()
+            return rgb, valid, transform, target
 
 
-def tiled_mask(rgb, predict, report=lambda message: None):
+def tiled_mask(rgb, predict, report=lambda message: None, directory=None, resources=None):
     """Keep tile cores and polygonise only after stitching, avoiding seam duplicates."""
     import numpy as np
     height, width = rgb.shape[1:]
     rows = max(1, math.ceil((height - TILE_SIZE) / STRIDE) + 1)
     cols = max(1, math.ceil((width - TILE_SIZE) / STRIDE) + 1)
-    result = np.zeros((height, width), dtype=np.uint8)
+    result = (mapped_array(Path(directory)/"mask.npy", "uint8", (height, width), resources)
+              if directory is not None and height * width > MEMORY_PIXELS
+              else np.zeros((height, width), dtype=np.uint8))
     half = (TILE_SIZE - STRIDE) // 2
     for row in range(rows):
         for col in range(cols):
@@ -115,10 +178,14 @@ def tiled_mask(rgb, predict, report=lambda message: None):
 def polygons(mask, valid, transform, min_area):
     import numpy as np
     from rasterio.features import shapes
-    from shapely.geometry import shape
     mask = ((mask > 0) & valid).astype(np.uint8)
+    return polygon_features(shapes(mask, mask=mask.astype(bool), transform=transform, connectivity=4), min_area)
+
+
+def polygon_features(records, min_area):
+    from shapely.geometry import shape
     features = []
-    for geometry, value in shapes(mask, mask=mask.astype(bool), transform=transform, connectivity=4):
+    for geometry, value in records:
         if value != 1:
             continue
         area = shape(geometry).area
@@ -134,11 +201,41 @@ def polygons(mask, valid, transform, min_area):
     return features
 
 
+def filtered_polygons(mask, valid, transform, crs, min_area, directory, report=lambda message: None):
+    """Median-filter bounded blocks with halos, then polygonise one stitched disk raster."""
+    import numpy as np
+    import rasterio
+    from rasterio.features import shapes
+    from rasterio.windows import Window
+    from PIL import Image, ImageFilter
+    height, width = mask.shape
+    path = Path(directory)/"filtered.tif"
+    valid_count = 0
+    with rasterio.open(path, "w", driver="GTiff", height=height, width=width, count=1,
+                       dtype="uint8", crs=crs, transform=transform, nodata=0,
+                       tiled=True, blockxsize=256, blockysize=256, compress="lzw", BIGTIFF="IF_SAFER") as dst:
+        for index, (y, x, h, w) in enumerate(blocks(height, width)):
+            # The five-pixel halo makes the 11-pixel median identical at block seams.
+            y0, x0 = max(0, y-5), max(0, x-5)
+            y1, x1 = min(height, y+h+5), min(width, x+w+5)
+            smooth = np.array(Image.fromarray(mask[y0:y1, x0:x1]).filter(ImageFilter.MedianFilter(11)))
+            core = smooth[y-y0:y-y0+h, x-x0:x-x0+w]
+            good = valid[y:y+h, x:x+w]
+            valid_count += int(good.sum())
+            dst.write(((core > 0) & good).astype("uint8"), 1, window=Window(x, y, w, h))
+            if index % 32 == 0:
+                report("Filtering building block {}…".format(index+1))
+    report("Converting the stitched building mask to polygons…")
+    with rasterio.open(path) as src:
+        band = rasterio.band(src, 1)
+        features = polygon_features(shapes(band, mask=band, transform=transform, connectivity=4), min_area)
+    return features, valid_count
+
+
 def run(request, report=print):
     validate_request(request)
-    import numpy as np
     import onnxruntime as ort
-    from PIL import Image, ImageFilter
+    import rasterio
     model = Path(request["building_model"])
     digest = hashlib.sha256()
     with model.open("rb") as handle:
@@ -146,21 +243,21 @@ def run(request, report=print):
             digest.update(block)
     if digest.hexdigest() != MODEL_SHA256:
         raise ValueError("This release supports the tested RAMP XUnet model only. Use the model linked in README.md.")
-    report("Reading local RGB imagery at 0.5 m per pixel…")
-    rgb, valid, transform, crs = read_area(request)
-    report("Loading the building model on CPU…")
-    options = ort.SessionOptions()
-    options.intra_op_num_threads = 4
-    session = ort.InferenceSession(str(model), sess_options=options, providers=["CPUExecutionProvider"])
-    input_name = session.get_inputs()[0].name
-    mask = tiled_mask(rgb, lambda tile: session.run(None, {input_name: tile})[0], report)
-    # Embedded RAMP default: 11-pixel median smoothing. Remask no-data afterwards.
-    mask = np.array(Image.fromarray(mask).filter(ImageFilter.MedianFilter(11)))
-    features = polygons(mask, valid, transform, request.get("min_area_m2", 10))
-    height, width = valid.shape
+    with tempfile.TemporaryDirectory(prefix="buildings-", dir=request.get("work_dir")) as directory, rasterio.Env(GDAL_CACHEMAX=128*1024**2), ExitStack() as resources:
+        report("Reading local RGB imagery at 0.5 m per pixel…")
+        rgb, valid, transform, crs = read_area(request, directory, report, resources)
+        report("Loading the building model on CPU…")
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 4
+        session = ort.InferenceSession(str(model), sess_options=options, providers=["CPUExecutionProvider"])
+        input_name = session.get_inputs()[0].name
+        mask = tiled_mask(rgb, lambda tile: session.run(None, {input_name: tile})[0], report, directory, resources)
+        features, valid_count = filtered_polygons(mask, valid, transform, crs,
+            request.get("min_area_m2", 10), directory, report)
+        height, width = valid.shape
     return {"protocol": 1, "crs_wkt": request["crs_wkt"], "features": features,
             "bounds": [transform.c, transform.f-height*RESOLUTION,
                        transform.c+width*RESOLUTION, transform.f],
             "width": width, "height": height, "pixel_size": RESOLUTION,
             "mode": "buildings", "device": "cpu", "model_sha256": MODEL_SHA256,
-            "valid_pixels": int(valid.sum())}
+            "valid_pixels": valid_count}
